@@ -1,0 +1,175 @@
+package com.example.kval
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavController
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import androidx.room.*
+import com.google.gson.Gson
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+@Entity data class User(@PrimaryKey val id: Int? = null, val email: String, val password: String)
+
+@Entity data class Item(
+    @PrimaryKey(autoGenerate = true) val primaryId: Int = 0,
+    val itemId: Int,
+    val userId: Int,
+    val title: String
+)
+
+data class JsonItem(val id: Int, val title: String)
+
+@Dao interface AppDao {
+    @Insert suspend fun insertUser(user: User): Long
+    @Query("SELECT * FROM user WHERE email = :email AND password = :password")
+    suspend fun getUser(email: String, password: String): User?
+    @Insert suspend fun insertItem(item: Item)
+    @Query("SELECT * FROM item WHERE userId = :userId")
+    suspend fun getFavorites(userId: Int): List<Item>
+}
+
+@Database(entities = [User::class, Item::class], version = 1)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun appDao(): AppDao
+}
+
+class AppViewModel(private val dao: AppDao, private val context: android.content.Context) : ViewModel() {
+    var user by mutableStateOf<User?>(null)
+    var items by mutableStateOf<List<JsonItem>>(emptyList())
+    var favorites by mutableStateOf<List<Item>>(emptyList())
+    var error by mutableStateOf<String?>(null)
+
+    init { loadItems() }
+
+    private fun showTemporaryError(message: String) {
+        error = message
+        viewModelScope.launch { delay(3000); error = null }
+    }
+
+    suspend fun register(email: String, password: String) {
+        try {
+            if (email.isEmpty() || password.isEmpty()) throw Exception("Поля пустые")
+            dao.insertUser(User(email = email, password = password))
+            login(email, password)
+        } catch (e: Exception) { showTemporaryError(e.message ?: "Ошибка") }
+    }
+
+    suspend fun login(email: String, password: String) {
+        try {
+            if (email.isEmpty() || password.isEmpty()) throw Exception("Поля пустые")
+            user = dao.getUser(email, password)
+            if (user == null) showTemporaryError("Неверно") else favorites = dao.getFavorites(user!!.id!!)
+        } catch (e: Exception) { showTemporaryError(e.message ?: "Ошибка") }
+    }
+
+    private fun loadItems() {
+        try {
+            val json = context.assets.open("data.json").bufferedReader().use { it.readText() }
+            items = Gson().fromJson(json, Array<JsonItem>::class.java).toList()
+        }
+        catch (e: Exception) { showTemporaryError("Ошибка данных") }
+    }
+
+    fun addToFavorite(item: JsonItem) {
+        user?.let { u ->
+            viewModelScope.launch {
+                try {
+                    dao.insertItem(Item(itemId = item.id, userId = u.id!!, title = item.title)) // Используем itemId
+                    favorites = dao.getFavorites(u.id)
+                } catch (e: Exception) { showTemporaryError("Ошибка") }
+            }
+        } ?: showTemporaryError("Войдите")
+    }
+}
+
+@Composable
+fun App(database: AppDatabase, context: android.content.Context) {
+    val navController = rememberNavController()
+    val vm: AppViewModel = viewModel { AppViewModel(database.appDao(), context) }
+    MaterialTheme {
+        NavHost(navController, "auth") {
+            composable("auth") { AuthScreen(vm, navController) }
+            composable("profile") { ProfileScreen(vm, navController) }
+            composable("items") { ItemsScreen(vm, navController) }
+            composable("favorites") { FavoritesScreen(vm) }
+        }
+    }
+}
+
+@Composable
+fun AuthScreen(vm: AppViewModel, nav: NavController) {
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    Column(Modifier.fillMaxSize().padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Spacer(Modifier.height(30.dp))
+        Text("Вход", fontSize = 20.sp)
+        TextField(value = email, onValueChange = { email = it }, label = { Text("Email") })
+        TextField(value = password, onValueChange = { password = it }, label = { Text("Пароль") })
+        Button(onClick = { scope.launch { vm.register(email, password); if (vm.user != null) nav.navigate("profile") } }) { Text("Регистрация") }
+        Button(onClick = { scope.launch { vm.login(email, password); if (vm.user != null) nav.navigate("profile") } }) { Text("Войти") }
+        vm.error?.let { Text(it, color = Color.Red) }
+    }
+}
+
+@Composable
+fun ProfileScreen(vm: AppViewModel, nav: NavController) {
+    Column(Modifier.fillMaxSize().padding(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text("Профиль", fontSize = 20.sp)
+        Text(vm.user?.email ?: "Нет данных", fontSize = 16.sp)
+        Button(onClick = { nav.navigate("items") }) { Text("Список") }
+        Button(onClick = { nav.navigate("favorites") }) { Text("Избранное") }
+    }
+}
+
+@Composable
+fun ItemsScreen(vm: AppViewModel, nav: NavController) {
+    Column(Modifier.fillMaxSize().padding(8.dp)) {
+        Text("Список", fontSize = 20.sp)
+        LazyColumn {
+            items(vm.items) { item ->
+                Text(item.title, fontSize = 16.sp, modifier = Modifier.fillMaxWidth().padding(4.dp)
+                    .pointerInput(Unit) { detectTapGestures(onDoubleTap = { vm.addToFavorite(item) }) })
+            }
+        }
+        vm.error?.let { Text(it, color = Color.Red) }
+    }
+}
+
+@Composable
+fun FavoritesScreen(vm: AppViewModel) {
+    Column(Modifier.fillMaxSize().padding(8.dp)) {
+        Text("Избранное", fontSize = 20.sp)
+        LazyColumn {
+            items(vm.favorites) { item -> Text(item.title, fontSize = 16.sp, modifier = Modifier.fillMaxWidth().padding(4.dp)) }
+            if (vm.favorites.isEmpty()) item { Text("Пусто", fontSize = 16.sp) }
+        }
+    }
+}
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val db = Room.databaseBuilder(this, AppDatabase::class.java, "app-db").build()
+        setContent { App(db, this) }
+    }
+}
