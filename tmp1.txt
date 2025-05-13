@@ -1,0 +1,132 @@
+import java.lang.Exception
+
+@Entity
+data class User(
+    @PrimaryKey(autoGenerate = true)
+    val id: Int,
+    val login: String,
+    val password: String
+)
+
+@Entity
+data class Item (
+    @PrimaryKey(autoGenerate = true)
+    val id: Int,
+    val title: String,
+    val userId: Int
+)
+
+data class JsonItem(val id: Int, val title: String)
+
+@Dao
+interface DAO {
+    // crud
+    @Insert
+    suspend fun addUser(user: User)
+
+    @Query("select * from user where login = :login and password = :password")
+    suspend fun getUser(login: String, password: String): User?
+
+    @Insert
+    suspend fun addItem(item: Item)
+
+    @Query("select *from item where userId = :user:Id")
+    suspend fun getFav(userId: Int): Item? // --> List<Item> потому что их может быть несколько
+
+}
+
+@Database(entities = [User::class, Item::class], version = 1)
+abstract class database: RoomDatabase() {
+    abstract fun dao(): DAO
+}
+
+// в модели описываем функции интерфейса, то есть если используем крад то подтягиваем дао, передаем контекст ui, защищаем от взлома и наследуем от глобальной вьюшки
+class viewModel(private val dao: DAO, private val context: android.Content.Context): ViewModel() { //switch context to this
+    // завести вагон нужных переменных
+    var user by mutableStateOf<User?>(null)
+    var error by  mutableStateOf<String?>(null)
+    var fav by mutableStateOf<List<Item>>(emptyList())
+    var items by mutableStateOf<List<JsonItem>>(emptyList())
+
+    private fun show(message: String) {
+        error = message
+        viewModelScope.launch {
+            delay(3000);
+            error = null
+        }
+    }
+
+    // реализовать auth и добавление в избранное
+
+    suspend fun register(login: String, password: String){
+        try {
+            if (login.isEmpty() || password.isEmpty()) throw Exception("Enter data")
+            dao.addUser(User(login = login, password = password))
+            login(login, password)
+        } catch (e: Exception) { show(e.message ?: "Error occurred")}
+    }
+
+    suspend fun login(login: String, password: String) {
+        try {
+            if (login.isEmpty() || password.isEmpty()) throw Exception("Enter data")
+            user = dao.getUser(login = login, password = password)
+            if (user == null) throw Exception("this user does not exist")
+            else fav = dao.getFav(user!!.id!!)
+        } catch (e: Exception) { show(e.message ?: "Error occurred")}
+    }
+
+    // парс jsonов
+
+    init {
+        loadItem()
+    }
+
+    private fun loadItem() {
+        try {
+            val json = context.assets.open("data.json").bufferReader().use{
+                it.readText()
+            }
+            items = Gson().fromJson(json, Array<JsonItem>::class.java).toList()
+        } catch (e: Exception) { show(e.message ?: "Error occurred")}
+    }
+
+    // favorite
+
+    fun addToFav (item: JsonItem){
+        user?.let{ u ->
+            viewModelScope.launch {
+                try {
+                    dao.addItem(Item(id = item.id, userId = u.id!!, title = item.title))
+                    fav = dao.getFav(u.id)
+                } catch (e: Exception) { show(e.message ?: "Error occurred")}
+            }
+        } ?: show("Log In first")
+    }
+}
+
+class MainActivity: ComponentActivity() {
+    override fun onCreate() {
+        val db = Room.databaseBuilder(this, Database::class.java, "app-db").build()
+        setContent {
+            App(db, this)
+        }
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
