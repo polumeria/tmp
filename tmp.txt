@@ -1,4 +1,52 @@
-package com.example.kval
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
